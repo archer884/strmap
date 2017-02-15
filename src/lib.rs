@@ -1,5 +1,3 @@
-#![feature(conservative_impl_trait, slice_patterns)]
-
 #[macro_use] extern crate bitflags;
 extern crate byteorder;
 

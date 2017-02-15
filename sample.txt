@@ -1,0 +1,8 @@
+This file exists
+%
+Solely to provide
+%
+A known sample file
+%
+To use with strfile
+

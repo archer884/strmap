@@ -51,7 +51,7 @@ impl StrMap {
         if count as usize != offsets.len() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                format!("Str count in header does not match str count in data: {} vs {}", count, offsets.len())
+                format!("Str count in header does not match str count in data: Header({}) vs Data({})", count, offsets.len())
             ));
         }
 
@@ -146,7 +146,7 @@ fn _x64_read<T: io::Read + io::Seek>(s: &mut T) -> io::Result<StrMap> {
     if count as usize != offsets.len() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            format!("Str count in header does not match str count in data: header({}) vs actual({})", count, offsets.len())
+            format!("Str count in header does not match str count in data: Header({}) vs Data({})", count, offsets.len())
         ));
     }
 

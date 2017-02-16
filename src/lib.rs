@@ -6,7 +6,6 @@ use std::slice;
 
 bitflags! {
     flags StrFlags: u32 {
-        const STR_NONE = 0b00000000,
         const STR_RANDOM = 0b00000001,
         const STR_ORDERED = 0b00000010,
         const STR_ROTATED = 0b00000100,
@@ -15,53 +14,38 @@ bitflags! {
 
 #[derive(Debug)]
 pub struct StrMap {
-    // Because this is stored, for some reason. I have a theory that the disposition of
-    // this very first value might tell us something about the format of the reset of the
-    // file, but I don't know that.
     version: u32,
-
     count: u32,
-
-    // Looks like these length values will have to be derived from the difference between
-    // consecutive offsets. >.<
     longest: u32,
     shortest: u32,
-
-    // These are stored as a single bitfield, which looks to be a full length unsigned
-    // long value that appears just after the rest.
     flags: StrFlags,
-
-    // This looks to be stored as a single byte, albeit at the head of a field of thirty-two
-    // bits. I'm not sure what all the padding is for, or if this will always appear on the
-    // left of the field or if it can move to the right. Ah, the wonders of not knowing
-    // all that much C.
     delimiter: u8,
-
-    // Seriously the only field that matters even slightly. I guess this vector will always
-    // begin with a zero? /shrug
     offsets: Vec<(u32, u32)>,
 }
 
 impl StrMap {
-    // I'm sure this can fail, but I am not certain what failure modes can result yet.
-    pub fn from_bytes<T: AsRef<[u8]>>(b: T) -> io::Result<StrMap> {
+    pub fn read<T: io::Read + io::Seek>(s: &mut T) -> io::Result<StrMap> {
         use byteorder::{NetworkEndian, ReadBytesExt};
-        use std::io::Cursor;
+        use std::io::SeekFrom;
 
-        let mut header = Cursor::new(&b);
+        let version = s.read_u32::<NetworkEndian>()?;
 
-        let version = header.read_u32::<NetworkEndian>()?;
-        let count = header.read_u32::<NetworkEndian>()?;
-        let longest = header.read_u32::<NetworkEndian>()?;
-        let shortest = header.read_u32::<NetworkEndian>()?;
-        let flags = StrFlags::from_bits(header.read_u32::<NetworkEndian>()?).expect("well, dammit");
-        let delimiter = header.read_u8()?;
+        if version == 1 {
+            return _x64_read(s);
+        }
 
-        // If the header lied about the length of our file, this will panic. I'm ok with that.
-        // Additionally, we need to read one additional value to get valid offsets, because each 
-        // offset consists of a pairing of two offset values--hence our range is `0..(count + 1)`.
-        let mut offset_cursor = Cursor::new(&b.as_ref()[(4 * 6)..]);
-        let values: Vec<_> = (0..(count + 1)).filter_map(|_| offset_cursor.read_u32::<NetworkEndian>().ok()).collect();
+        let count = s.read_u32::<NetworkEndian>()?;
+        let longest = s.read_u32::<NetworkEndian>()?;
+        let shortest = s.read_u32::<NetworkEndian>()?;
+        let flags = StrFlags::from_bits(s.read_u32::<NetworkEndian>()?).expect("well, dammit");
+        let delimiter = s.read_u8()?;
+
+        // We need to read one additional value to get valid offsets, because each 
+        // offset consists of a pairing of two offset values--hence our range is 
+        // `0..(count + 1)`. We begin by skipping the next three bytes, since a 
+        // delimiter consists of one byte only.
+        s.seek(SeekFrom::Current(3))?;
+        let values: Vec<_> = (0..(count + 1)).filter_map(|_| s.read_u32::<NetworkEndian>().ok()).collect();
         let offsets: Vec<_> = OffsetsIter::new(values.iter().cloned()).collect();
 
         if count as usize != offsets.len() {
@@ -123,6 +107,58 @@ impl StrMap {
             source: self.offsets.iter()
         }
     }
+}
+
+fn _x64_read<T: io::Read + io::Seek>(s: &mut T) -> io::Result<StrMap> {
+    use byteorder::{NetworkEndian, ReadBytesExt};
+    use std::io::SeekFrom;
+    
+    s.seek(SeekFrom::Current(4))?;
+    let count = s.read_u32::<NetworkEndian>()?;
+
+    s.seek(SeekFrom::Current(4))?;
+    let longest = s.read_u32::<NetworkEndian>()?;
+
+    s.seek(SeekFrom::Current(4))?;
+    let shortest = s.read_u32::<NetworkEndian>()?;
+
+    s.seek(SeekFrom::Current(4))?;
+    let flags = StrFlags::from_bits(s.read_u32::<NetworkEndian>()?).expect("well, dammit");
+
+    s.seek(SeekFrom::Current(4))?;
+    let delimiter = s.read_u8()?;
+
+    // For this case, we skip every second record because strfile is worthless
+    // on x64 systems. I almost stopped typing at "worthless," but I am nice.
+    s.seek(SeekFrom::Current(7))?;
+    let values: Vec<_> = (0..(count + 1))
+        .filter_map(|_| {
+            let ret = s.read_u32::<NetworkEndian>().ok();
+            match s.seek(SeekFrom::Current(4)) {
+                Err(_) => None,
+                _ => ret,
+            }
+        })
+        .collect();
+
+    let offsets: Vec<_> = OffsetsIter::new(values.iter().cloned()).collect();
+
+    if count as usize != offsets.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Str count in header does not match str count in data: header({}) vs actual({})", count, offsets.len())
+        ));
+    }
+
+    Ok(StrMap {
+        version: 1, // This is how we got here, remember?
+        count: count,
+        longest: longest,
+        shortest: shortest,
+        flags: flags,
+        delimiter: delimiter,
+        offsets: offsets,
+    })
 }
 
 impl<'a> IntoIterator for &'a StrMap {
@@ -190,14 +226,29 @@ impl<I> Iterator for OffsetsIter<I>
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     static SAMPLE: &'static str = include_str!("../sample.txt");
     static SAMPLE_DAT: &'static [u8] = include_bytes!("../sample.txt.dat");
+    static SAMPLE_DAT_64: &'static [u8] = include_bytes!("../sample.txt-64.dat");
 
     #[test]
-    fn can_parse_sample_file_dat() {
-        let x = super::StrMap::from_bytes(SAMPLE_DAT).unwrap();
+    fn can_parse_x86_dat() {
+        parse(SAMPLE_DAT);
+    }
+
+    #[test]
+    fn can_parse_x64_dat() {
+        parse(SAMPLE_DAT_64);
+    }
+
+    fn parse(input: &[u8]) {
+        let mut x = Cursor::new(input);
+        let x = super::StrMap::read(&mut x).unwrap();
         let strings: Vec<_> = x.iter().map(|(start, len)| unsafe {
-            SAMPLE.slice_unchecked(start as usize, len as usize - 2).trim_right_matches(|c| '%' == c || c.is_whitespace())
+            SAMPLE
+                .slice_unchecked(start as usize, len as usize - 2)
+                .trim_right_matches(|c| '%' == c || c.is_whitespace())
         }).collect();
 
         let expected = &[

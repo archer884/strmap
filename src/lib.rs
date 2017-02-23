@@ -30,6 +30,9 @@ impl StrMap {
 
         let version = s.read_u32::<NetworkEndian>()?;
 
+        // I have this harebrained idea that x64 systems will mark the file with this
+        // "version 1" thing to let us know that the file was created on x64 and is,
+        // therefore, fucked.
         if version == 1 {
             return _x64_read(s);
         }

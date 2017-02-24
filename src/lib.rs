@@ -3,6 +3,7 @@ extern crate byteorder;
 
 use std::io;
 use std::slice;
+use std::vec;
 
 bitflags! {
     flags StrFlags: u32 {
@@ -162,6 +163,30 @@ fn _x64_read<T: io::Read + io::Seek>(s: &mut T) -> io::Result<StrMap> {
         delimiter: delimiter,
         offsets: offsets,
     })
+}
+
+impl IntoIterator for StrMap {
+    type Item = (u32, u32);
+    type IntoIter = ConsumingStrMapIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let offsets = self.offsets;
+        ConsumingStrMapIter {
+            source: offsets.into_iter(),
+        }
+    }
+}
+
+pub struct ConsumingStrMapIter {
+    source: vec::IntoIter<(u32, u32)>,
+}
+
+impl Iterator for ConsumingStrMapIter {
+    type Item = (u32, u32);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.source.next()
+    }
 }
 
 impl<'a> IntoIterator for &'a StrMap {
